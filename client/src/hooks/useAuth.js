@@ -44,7 +44,7 @@ async function fetchProfile(userId) {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, user_id, email, display_name, username, about, avatar_url, is_online, last_seen')
+      .select('id, user_id, phone, display_name, username, about, avatar_url, is_online, last_seen')
       .eq('id', userId)
       .maybeSingle();
 
@@ -58,7 +58,7 @@ async function fetchProfile(userId) {
 
     const { data: altData, error: altError } = await supabase
       .from('profiles')
-      .select('id, user_id, email, display_name, username, about, avatar_url, is_online, last_seen')
+      .select('id, user_id, phone, display_name, username, about, avatar_url, is_online, last_seen')
       .eq('user_id', userId)
       .maybeSingle();
 

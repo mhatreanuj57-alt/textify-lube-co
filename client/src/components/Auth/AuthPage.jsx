@@ -74,7 +74,6 @@ export default function AuthFlowPage() {
       // Update or Insert profile with phone
       const payload = {
         id: user.id,
-        email: user.email,
         phone: phone,
       };
 

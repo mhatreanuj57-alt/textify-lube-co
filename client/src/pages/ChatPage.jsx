@@ -13,15 +13,27 @@ import styles from './ChatPage.module.css';
 export default function ChatPage() {
   const navigate = useNavigate();
   const { conversationId } = useParams();
-  const { user, profile, loading: authLoading, signOut } = useAuth();
+  const { user, profile, loading: authLoading, profileResolved, signOut } = useAuth();
   const { conversations, loading } = useConversations();
   const { presenceMap } = usePresence();
   const [search, setSearch] = useState('');
   const [isWindowFocused, setIsWindowFocused] = useState(true);
+  const effectiveProfile = profile ?? {
+    id: user?.id,
+    user_id: user?.id,
+    email: user?.email || '',
+    display_name:
+      user?.user_metadata?.display_name ||
+      user?.user_metadata?.full_name ||
+      user?.email?.split('@')[0] ||
+      'Textify user',
+    username: user?.user_metadata?.user_name || user?.user_metadata?.preferred_username || '',
+    avatar_url: user?.user_metadata?.avatar_url || '',
+  };
 
   const call = useCall({
     currentUserId: user?.id,
-    currentProfile: profile,
+    currentProfile: effectiveProfile,
   });
 
   useEffect(() => {
@@ -86,7 +98,7 @@ export default function ChatPage() {
     await call.startCall(conversation, type);
   };
 
-  if (authLoading || !user || !profile) {
+  if (authLoading || !user) {
     return <Spinner fullscreen label="Loading your chats..." />;
   }
 
@@ -95,7 +107,7 @@ export default function ChatPage() {
       <main className={`${styles.page} ${!isWindowFocused ? styles.privacyBlur : ''}`}>
         <div className={`${styles.sidebarPane} ${activeConversation ? styles.mobileHidden : ''}`}>
           <Sidebar
-            profile={profile}
+            profile={effectiveProfile}
             searchValue={search}
             onSearchChange={setSearch}
             conversations={filteredConversations}
@@ -145,6 +157,7 @@ export default function ChatPage() {
         onToggleMute={call.toggleMute}
         onToggleCamera={call.toggleCamera}
       />
+      {!profileResolved ? <Spinner label="Syncing profile..." /> : null}
     </>
   );
 }

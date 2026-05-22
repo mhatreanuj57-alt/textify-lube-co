@@ -7,13 +7,13 @@ import AuthPage from '@/pages/AuthPage';
 const ChatPage = lazy(() => import('@/pages/ChatPage'));
 
 function ProtectedRoute({ children }) {
-  const { user, loading, profile } = useAuth();
+  const { user, loading } = useAuth();
 
   if (loading) {
     return <Spinner fullscreen label="Loading Textify..." />;
   }
 
-  if (!user || !profile) {
+  if (!user) {
     return <Navigate to="/" replace />;
   }
 
@@ -21,9 +21,13 @@ function ProtectedRoute({ children }) {
 }
 
 function PublicRoute({ children }) {
-  const { user, loading, profile } = useAuth();
+  const { user, loading, profile, profileResolved } = useAuth();
 
   if (loading) {
+    return <Spinner fullscreen label="Loading Textify..." />;
+  }
+
+  if (user && !profileResolved) {
     return <Spinner fullscreen label="Loading Textify..." />;
   }
 

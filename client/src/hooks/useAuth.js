@@ -45,24 +45,37 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [profileResolved, setProfileResolved] = useState(false);
 
-  const syncUser = useCallback(async (sessionUser) => {
+  const loadProfile = useCallback(async (sessionUser) => {
     if (!sessionUser) {
-      setUser(null);
       setProfile(null);
+      setProfileResolved(true);
       return;
     }
-
-    // Only set user if it changed to avoid unnecessary re-renders
-    setUser((current) => (current?.id === sessionUser.id ? current : sessionUser));
 
     try {
       const nextProfile = await fetchProfile(sessionUser.id);
       setProfile(nextProfile);
     } catch {
       setProfile(null);
+    } finally {
+      setProfileResolved(true);
     }
   }, []);
+
+  const syncUser = useCallback(async (sessionUser) => {
+    if (!sessionUser) {
+      setUser(null);
+      setProfile(null);
+      setProfileResolved(true);
+      return;
+    }
+
+    setUser((current) => (current?.id === sessionUser.id ? current : sessionUser));
+    setProfileResolved(false);
+    void loadProfile(sessionUser);
+  }, [loadProfile]);
 
   useEffect(() => {
     let active = true;
@@ -74,7 +87,10 @@ export function AuthProvider({ children }) {
         } = await supabase.auth.getSession();
 
         if (active) {
-          await syncUser(session?.user ?? null);
+          const sessionUser = session?.user ?? null;
+          setUser(sessionUser);
+          setProfileResolved(false);
+          void loadProfile(sessionUser);
         }
       } finally {
         if (active) {
@@ -92,15 +108,14 @@ export function AuthProvider({ children }) {
       if (event === 'SIGNED_OUT') {
         setUser(null);
         setProfile(null);
+        setProfileResolved(true);
         setLoading(false);
         return;
       }
 
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         if (active) {
-          setLoading(true);
           await syncUser(session?.user ?? null);
-          setLoading(false);
         }
       }
     });
@@ -114,11 +129,14 @@ export function AuthProvider({ children }) {
   const refreshProfile = useCallback(async () => {
     if (!user?.id) {
       setProfile(null);
+      setProfileResolved(true);
       return null;
     }
 
+    setProfileResolved(false);
     const nextProfile = await fetchProfile(user.id);
     setProfile(nextProfile);
+    setProfileResolved(true);
     return nextProfile;
   }, [user?.id]);
 
@@ -133,11 +151,12 @@ export function AuthProvider({ children }) {
       user,
       profile,
       loading,
+      profileResolved,
       signOut,
       refreshProfile,
       setProfile,
     }),
-    [loading, profile, refreshProfile, signOut, user],
+    [loading, profile, profileResolved, refreshProfile, signOut, user],
   );
 
   return createElement(AuthContext.Provider, { value }, children);

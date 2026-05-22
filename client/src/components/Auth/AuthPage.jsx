@@ -7,37 +7,18 @@ import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/lib/supabase';
 import styles from './AuthPage.module.css';
 
-async function lookupProfile(userId) {
-  if (!userId) return null;
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle();
-    if (error) throw error;
-    if (data) return data;
-    const { data: altData, error: altError } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle();
-    if (altError) return null;
-    return altData;
-  } catch (err) {
-    console.error('Error looking up profile:', err);
-    return null;
-  }
-}
-
 export default function AuthFlowPage() {
   const navigate = useNavigate();
-  const { user, profile, refreshProfile } = useAuth();
+  const { user, profile, profileResolved, refreshProfile } = useAuth();
   const [step, setStep] = useState('login');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
+    if (user && !profileResolved) {
+      return;
+    }
+
     if (user && profile) {
       if (!profile.phone) {
         setStep('phone');
@@ -52,7 +33,7 @@ export default function AuthFlowPage() {
     if (user && !profile) {
       setStep('phone');
     }
-  }, [navigate, profile, user]);
+  }, [navigate, profile, profileResolved, user]);
 
   const handleGoogleLogin = useCallback(async () => {
     setLoading(true);

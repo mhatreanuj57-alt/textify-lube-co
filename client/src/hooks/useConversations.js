@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { buildMessagePreview, getProfileId } from '@/lib/chat';
 import { useAuth } from '@/hooks/useAuth';
@@ -33,8 +33,82 @@ export default function useConversations() {
   const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const requestRef = useRef(0);
+
+  const hydrateConversationMetadata = useCallback(async (conversationIds, userId, requestId = requestRef.current) => {
+    if (!conversationIds.length || !userId) {
+      return;
+    }
+
+    try {
+      const messagePromises = conversationIds.map((id) =>
+        supabase
+          .from('messages')
+          .select('id, conversation_id, sender_id, content, message_type, status, created_at, file_name')
+          .eq('conversation_id', id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      );
+
+      const unreadPromises = conversationIds.map((id) =>
+        supabase
+          .from('messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('conversation_id', id)
+          .neq('sender_id', userId)
+          .in('status', ['sent', 'delivered']),
+      );
+
+      const [messageResults, unreadResults] = await Promise.all([
+        Promise.all(messagePromises),
+        Promise.all(unreadPromises),
+      ]);
+
+      if (requestId !== requestRef.current) {
+        return;
+      }
+
+      const latestMessageMap = new Map(
+        messageResults
+          .map((result) => result.data)
+          .filter(Boolean)
+          .map((message) => [message.conversation_id, message]),
+      );
+
+      const unreadMap = new Map(
+        unreadResults.map((result, index) => [conversationIds[index], result.count ?? 0]),
+      );
+
+      setConversations((current) =>
+        current
+          .map((conversation) => {
+            if (!latestMessageMap.has(conversation.id) && !unreadMap.has(conversation.id)) {
+              return conversation;
+            }
+
+            const latestMessage = latestMessageMap.get(conversation.id) ?? conversation.last_message ?? null;
+            const unreadCount = unreadMap.get(conversation.id) ?? conversation.unread_count ?? 0;
+
+            return {
+              ...conversation,
+              last_message: latestMessage,
+              last_message_preview: buildMessagePreview(latestMessage),
+              last_message_at: latestMessage?.created_at || conversation.updated_at || conversation.created_at,
+              unread_count: unreadCount,
+              status: latestMessage?.status || conversation.status || 'sent',
+            };
+          })
+          .sort((a, b) => new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0)),
+      );
+    } catch {
+      // Keep the fast conversation shell visible even if metadata hydration fails.
+    }
+  }, []);
 
   const loadConversations = useCallback(async () => {
+    const requestId = ++requestRef.current;
+
     if (!user?.id) {
       setConversations([]);
       setLoading(false);
@@ -72,36 +146,6 @@ export default function useConversations() {
       if (conversationsError) throw conversationsError;
       if (participantsError) throw participantsError;
 
-      // Fetch only the latest message for each conversation
-      const messagePromises = conversationIds.map((id) =>
-        supabase
-          .from('messages')
-          .select('id, conversation_id, sender_id, content, message_type, status, created_at, file_name')
-          .eq('conversation_id', id)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-      );
-
-      // Also fetch unread counts for each conversation
-      const unreadPromises = conversationIds.map((id) =>
-        supabase
-          .from('messages')
-          .select('id', { count: 'exact', head: true })
-          .eq('conversation_id', id)
-          .neq('sender_id', user.id)
-          .in('status', ['sent', 'delivered']),
-      );
-
-      const messageResults = await Promise.all(messagePromises);
-      const unreadResults = await Promise.all(unreadPromises);
-
-      const latestMessages = messageResults.map((res) => res.data).filter(Boolean);
-      const unreadCounts = unreadResults.map((res, index) => ({
-        id: conversationIds[index],
-        count: res.count ?? 0,
-      }));
-
       const otherParticipants = (participantRows ?? []).filter((participant) => participant.user_id !== user.id);
       const otherUserIds = [...new Set(otherParticipants.map((participant) => participant.user_id).filter(Boolean))];
 
@@ -109,17 +153,16 @@ export default function useConversations() {
       let profilesError = null;
 
       if (otherUserIds.length) {
-        // Try id first, selecting only necessary fields
         const { data, error } = await supabase
           .from('profiles')
           .select('id, user_id, display_name, username, avatar_url, is_online, last_seen')
           .in('id', otherUserIds);
-        
+
         profileRows = data ?? [];
         profilesError = error;
 
-        const foundIds = new Set(profileRows.map(p => getProfileId(p)));
-        const missingIds = otherUserIds.filter(id => !foundIds.has(id));
+        const foundIds = new Set(profileRows.map((profile) => getProfileId(profile)));
+        const missingIds = otherUserIds.filter((id) => !foundIds.has(id));
 
         if (missingIds.length) {
           try {
@@ -127,44 +170,50 @@ export default function useConversations() {
               .from('profiles')
               .select('id, user_id, display_name, username, avatar_url, is_online, last_seen')
               .in('user_id', missingIds);
-            
+
             if (!altError && altData) {
               profileRows = [...profileRows, ...altData];
             }
           } catch {
-            // Ignore missing user_id column
+            // Ignore missing user_id column.
           }
         }
       }
 
-      if (profilesError) throw profilesError;
+      if (profilesError) {
+        throw profilesError;
+      }
 
       const profileMap = new Map((profileRows ?? []).map((profile) => [getProfileId(profile), profile]));
-      const unreadMap = new Map(unreadCounts.map((item) => [item.id, item.count]));
 
       const items = (conversationRows ?? [])
         .map((conversation) => {
           const participant = otherParticipants.find((item) => item.conversation_id === conversation.id);
-          const latestMessage = latestMessages.find((m) => m.conversation_id === conversation.id) ?? null;
-          const unreadCount = unreadMap.get(conversation.id) ?? 0;
 
           return normalizeConversation({
             conversation,
             participant,
             otherProfile: profileMap.get(participant?.user_id),
-            latestMessage,
-            unreadCount,
+            latestMessage: null,
+            unreadCount: 0,
           });
         })
         .sort((a, b) => new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0));
 
+      if (requestId !== requestRef.current) {
+        return;
+      }
+
       setConversations(items);
+      void hydrateConversationMetadata(conversationIds, user.id, requestId);
     } catch {
       setError('Unable to load conversations right now.');
     } finally {
-      setLoading(false);
+      if (requestId === requestRef.current) {
+        setLoading(false);
+      }
     }
-  }, [user?.id]);
+  }, [hydrateConversationMetadata, user?.id]);
 
   useEffect(() => {
     void loadConversations();
@@ -175,13 +224,98 @@ export default function useConversations() {
       return undefined;
     }
 
+    const applyMessageInsert = (message) => {
+      if (!message?.conversation_id) {
+        return;
+      }
+
+      setConversations((current) => {
+        if (!current.some((conversation) => conversation.id === message.conversation_id)) {
+          return current;
+        }
+
+        return current
+          .map((conversation) => {
+            if (conversation.id !== message.conversation_id) {
+              return conversation;
+            }
+
+            const unreadDelta =
+              message.sender_id !== user.id && ['sent', 'delivered'].includes(message.status) ? 1 : 0;
+
+            return {
+              ...conversation,
+              last_message: message,
+              last_message_preview: buildMessagePreview(message),
+              last_message_at: message.created_at || conversation.last_message_at,
+              unread_count: conversation.unread_count + unreadDelta,
+              status: message.status || conversation.status,
+            };
+          })
+          .sort((a, b) => new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0));
+      });
+    };
+
+    const applyMessageUpdate = (message) => {
+      if (!message?.id) {
+        return;
+      }
+
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.last_message?.id === message.id
+            ? {
+                ...conversation,
+                last_message: message,
+                last_message_preview: buildMessagePreview(message),
+                last_message_at: message.created_at || conversation.last_message_at,
+                status: message.status || conversation.status,
+              }
+            : conversation,
+        ),
+      );
+    };
+
+    const applyProfileUpdate = (profile) => {
+      const profileId = getProfileId(profile);
+
+      if (!profileId) {
+        return;
+      }
+
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.otherUserId === profileId
+            ? {
+                ...conversation,
+                display_name: profile.display_name || profile.username || conversation.display_name,
+                username: profile.username || conversation.username,
+                avatar_url: profile.avatar_url || conversation.avatar_url,
+                is_online: Boolean(profile.is_online),
+                last_seen: profile.last_seen || conversation.last_seen,
+              }
+            : conversation,
+        ),
+      );
+    };
+
     const channel = supabase
       .channel(`conversations:${user.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => {
-        void loadConversations();
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+        applyMessageInsert(payload.new);
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
-        void loadConversations();
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (payload) => {
+        applyMessageUpdate(payload.new);
+      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'conversation_participants', filter: `user_id=eq.${user.id}` },
+        () => {
+          void loadConversations();
+        },
+      )
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (payload) => {
+        applyProfileUpdate(payload.new);
       })
       .subscribe();
 

@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import SimplePeer from 'simple-peer';
 import { supabase } from '@/lib/supabase';
 
 const TERMINAL_STATUSES = new Set(['ended', 'rejected', 'error']);
 const CHANNEL_TIMEOUT_MS = 10000;
+let simplePeerPromise;
+
+async function getSimplePeer() {
+  if (!simplePeerPromise) {
+    simplePeerPromise = import('simple-peer').then((module) => module.default);
+  }
+
+  return simplePeerPromise;
+}
 
 function getIceServers() {
   const defaultServers = [
@@ -172,7 +180,8 @@ export default function useCall({ currentUserId, currentProfile }) {
   }, []);
 
   const createPeer = useCallback(
-    ({ initiator, stream, targetUserId, conversationId, callType, initialSignal, metadata }) => {
+    async ({ initiator, stream, targetUserId, conversationId, callType, initialSignal, metadata }) => {
+      const SimplePeer = await getSimplePeer();
       const peer = new SimplePeer({
         initiator,
         trickle: true,
@@ -288,7 +297,7 @@ export default function useCall({ currentUserId, currentProfile }) {
 
         setCallSession(session);
 
-        peerRef.current = createPeer({
+        peerRef.current = await createPeer({
           initiator: true,
           stream,
           targetUserId: conversation.otherUserId,
@@ -330,7 +339,7 @@ export default function useCall({ currentUserId, currentProfile }) {
       const stream = await requestMedia(incoming.type);
       setCallSession((current) => (current ? { ...current, status: 'connecting', reason: '' } : current));
 
-      const peer = createPeer({
+      const peer = await createPeer({
         initiator: false,
         stream,
         targetUserId: incoming.userId,

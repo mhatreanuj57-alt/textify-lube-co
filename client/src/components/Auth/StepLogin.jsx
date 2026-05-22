@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
 import { gsap } from 'gsap';
-import styles from './StepEmail.module.css'; // Reusing the card styles
+import styles from './StepLogin.module.css'; // Reusing the card styles
 
 export default function StepLogin({ onGoogleLogin, loading, error }) {
   const cardRef = useRef(null);

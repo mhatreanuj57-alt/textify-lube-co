@@ -2,8 +2,8 @@ import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import Spinner from '@/components/Shared/Spinner';
 import { useAuth } from '@/hooks/useAuth';
+import AuthPage from '@/pages/AuthPage';
 
-const AuthPage = lazy(() => import('@/pages/AuthPage'));
 const ChatPage = lazy(() => import('@/pages/ChatPage'));
 
 function ProtectedRoute({ children }) {

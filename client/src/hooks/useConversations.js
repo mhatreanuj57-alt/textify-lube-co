@@ -3,6 +3,39 @@ import { supabase } from '@/lib/supabase';
 import { buildMessagePreview, getProfileId } from '@/lib/chat';
 import { useAuth } from '@/hooks/useAuth';
 
+const CONVERSATIONS_CACHE_KEY = 'textify.conversations';
+
+function readCachedConversations(userId) {
+  if (typeof window === 'undefined' || !userId) {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(`${CONVERSATIONS_CACHE_KEY}:${userId}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedConversations(userId, items) {
+  if (typeof window === 'undefined' || !userId) {
+    return;
+  }
+
+  try {
+    if (!items?.length) {
+      window.localStorage.removeItem(`${CONVERSATIONS_CACHE_KEY}:${userId}`);
+      return;
+    }
+
+    window.localStorage.setItem(`${CONVERSATIONS_CACHE_KEY}:${userId}`, JSON.stringify(items));
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
 function normalizeConversation({
   conversation,
   participant,
@@ -35,67 +68,57 @@ export default function useConversations() {
   const [error, setError] = useState('');
   const requestRef = useRef(0);
 
+  const updateConversations = useCallback((updater) => {
+    setConversations((current) => {
+      const nextItems = typeof updater === 'function' ? updater(current) : updater;
+      if (user?.id) {
+        writeCachedConversations(user.id, nextItems);
+      }
+      return nextItems;
+    });
+  }, [user?.id]);
+
   const hydrateConversationMetadata = useCallback(async (conversationIds, userId, requestId = requestRef.current) => {
     if (!conversationIds.length || !userId) {
       return;
     }
 
     try {
-      const messagePromises = conversationIds.map((id) =>
-        supabase
-          .from('messages')
-          .select('id, conversation_id, sender_id, content, message_type, status, created_at, file_name')
-          .eq('conversation_id', id)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-      );
+      const { data: messageRows, error: messageError } = await supabase
+        .from('messages')
+        .select('id, conversation_id, sender_id, content, message_type, status, created_at, file_name')
+        .in('conversation_id', conversationIds)
+        .order('created_at', { ascending: false });
 
-      const unreadPromises = conversationIds.map((id) =>
-        supabase
-          .from('messages')
-          .select('id', { count: 'exact', head: true })
-          .eq('conversation_id', id)
-          .neq('sender_id', userId)
-          .in('status', ['sent', 'delivered']),
-      );
-
-      const [messageResults, unreadResults] = await Promise.all([
-        Promise.all(messagePromises),
-        Promise.all(unreadPromises),
-      ]);
+      if (messageError) {
+        throw messageError;
+      }
 
       if (requestId !== requestRef.current) {
         return;
       }
 
-      const latestMessageMap = new Map(
-        messageResults
-          .map((result) => result.data)
-          .filter(Boolean)
-          .map((message) => [message.conversation_id, message]),
-      );
+      const latestMessageMap = new Map();
+      for (const message of messageRows ?? []) {
+        if (!latestMessageMap.has(message.conversation_id)) {
+          latestMessageMap.set(message.conversation_id, message);
+        }
+      }
 
-      const unreadMap = new Map(
-        unreadResults.map((result, index) => [conversationIds[index], result.count ?? 0]),
-      );
-
-      setConversations((current) =>
+      updateConversations((current) =>
         current
           .map((conversation) => {
-            if (!latestMessageMap.has(conversation.id) && !unreadMap.has(conversation.id)) {
+            if (!latestMessageMap.has(conversation.id)) {
               return conversation;
             }
 
             const latestMessage = latestMessageMap.get(conversation.id) ?? conversation.last_message ?? null;
-            const unreadCount = unreadMap.get(conversation.id) ?? conversation.unread_count ?? 0;
 
             return {
               ...conversation,
               last_message: latestMessage,
               last_message_preview: buildMessagePreview(latestMessage),
               last_message_at: latestMessage?.created_at || conversation.updated_at || conversation.created_at,
-              unread_count: unreadCount,
               status: latestMessage?.status || conversation.status || 'sent',
             };
           })
@@ -104,18 +127,24 @@ export default function useConversations() {
     } catch {
       // Keep the fast conversation shell visible even if metadata hydration fails.
     }
-  }, []);
+  }, [updateConversations]);
 
   const loadConversations = useCallback(async () => {
     const requestId = ++requestRef.current;
 
     if (!user?.id) {
-      setConversations([]);
+      updateConversations([]);
       setLoading(false);
       return;
     }
 
-    setLoading(true);
+    const cachedItems = readCachedConversations(user.id);
+    if (cachedItems.length) {
+      updateConversations(cachedItems);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     setError('');
 
     try {
@@ -131,7 +160,7 @@ export default function useConversations() {
       const conversationIds = [...new Set((membershipRows ?? []).map((item) => item.conversation_id))];
 
       if (!conversationIds.length) {
-        setConversations([]);
+        updateConversations([]);
         return;
       }
 
@@ -204,7 +233,7 @@ export default function useConversations() {
         return;
       }
 
-      setConversations(items);
+      updateConversations(items);
       void hydrateConversationMetadata(conversationIds, user.id, requestId);
     } catch {
       setError('Unable to load conversations right now.');
@@ -213,7 +242,7 @@ export default function useConversations() {
         setLoading(false);
       }
     }
-  }, [hydrateConversationMetadata, user?.id]);
+  }, [hydrateConversationMetadata, updateConversations, user?.id]);
 
   useEffect(() => {
     void loadConversations();
@@ -229,7 +258,7 @@ export default function useConversations() {
         return;
       }
 
-      setConversations((current) => {
+      updateConversations((current) => {
         if (!current.some((conversation) => conversation.id === message.conversation_id)) {
           return current;
         }
@@ -261,7 +290,7 @@ export default function useConversations() {
         return;
       }
 
-      setConversations((current) =>
+      updateConversations((current) =>
         current.map((conversation) =>
           conversation.last_message?.id === message.id
             ? {
@@ -283,7 +312,7 @@ export default function useConversations() {
         return;
       }
 
-      setConversations((current) =>
+      updateConversations((current) =>
         current.map((conversation) =>
           conversation.otherUserId === profileId
             ? {
@@ -322,7 +351,7 @@ export default function useConversations() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [loadConversations, user?.id]);
+  }, [loadConversations, updateConversations, user?.id]);
 
   return useMemo(
     () => ({

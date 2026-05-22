@@ -3,6 +3,38 @@ import { supabase } from '@/lib/supabase';
 import { getProfileId } from '@/lib/chat';
 
 const AuthContext = createContext(null);
+const PROFILE_CACHE_KEY = 'textify.profile';
+const USER_CACHE_KEY = 'textify.user';
+
+function readCachedJson(key) {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const value = window.localStorage.getItem(key);
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedJson(key, value) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (value === null) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignore storage errors.
+  }
+}
 
 async function fetchProfile(userId) {
   if (!userId) {
@@ -42,23 +74,26 @@ async function fetchProfile(userId) {
 }
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [profile, setProfile] = useState(null);
+  const [user, setUser] = useState(() => readCachedJson(USER_CACHE_KEY));
+  const [profile, setProfile] = useState(() => readCachedJson(PROFILE_CACHE_KEY));
   const [loading, setLoading] = useState(true);
-  const [profileResolved, setProfileResolved] = useState(false);
+  const [profileResolved, setProfileResolved] = useState(() => Boolean(readCachedJson(PROFILE_CACHE_KEY)));
 
   const loadProfile = useCallback(async (sessionUser) => {
     if (!sessionUser) {
       setProfile(null);
       setProfileResolved(true);
+      writeCachedJson(PROFILE_CACHE_KEY, null);
       return;
     }
 
     try {
       const nextProfile = await fetchProfile(sessionUser.id);
       setProfile(nextProfile);
+      writeCachedJson(PROFILE_CACHE_KEY, nextProfile);
     } catch {
       setProfile(null);
+      writeCachedJson(PROFILE_CACHE_KEY, null);
     } finally {
       setProfileResolved(true);
     }
@@ -69,10 +104,13 @@ export function AuthProvider({ children }) {
       setUser(null);
       setProfile(null);
       setProfileResolved(true);
+      writeCachedJson(USER_CACHE_KEY, null);
+      writeCachedJson(PROFILE_CACHE_KEY, null);
       return;
     }
 
     setUser((current) => (current?.id === sessionUser.id ? current : sessionUser));
+    writeCachedJson(USER_CACHE_KEY, sessionUser);
     setProfileResolved(false);
     void loadProfile(sessionUser);
   }, [loadProfile]);
@@ -89,6 +127,7 @@ export function AuthProvider({ children }) {
         if (active) {
           const sessionUser = session?.user ?? null;
           setUser(sessionUser);
+          writeCachedJson(USER_CACHE_KEY, sessionUser);
           setProfileResolved(false);
           void loadProfile(sessionUser);
         }
@@ -130,6 +169,7 @@ export function AuthProvider({ children }) {
     if (!user?.id) {
       setProfile(null);
       setProfileResolved(true);
+      writeCachedJson(PROFILE_CACHE_KEY, null);
       return null;
     }
 
@@ -137,6 +177,7 @@ export function AuthProvider({ children }) {
     const nextProfile = await fetchProfile(user.id);
     setProfile(nextProfile);
     setProfileResolved(true);
+    writeCachedJson(PROFILE_CACHE_KEY, nextProfile);
     return nextProfile;
   }, [user?.id]);
 
@@ -144,6 +185,9 @@ export function AuthProvider({ children }) {
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
+    setProfileResolved(true);
+    writeCachedJson(USER_CACHE_KEY, null);
+    writeCachedJson(PROFILE_CACHE_KEY, null);
   }, []);
 
   const value = useMemo(

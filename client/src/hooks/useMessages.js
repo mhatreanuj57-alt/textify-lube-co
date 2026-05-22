@@ -3,6 +3,39 @@ import { supabase } from '@/lib/supabase';
 import { sanitizeFileName } from '@/lib/chat';
 import { useAuth } from '@/hooks/useAuth';
 
+const MESSAGE_CACHE_KEY = 'textify.messages';
+
+function readCachedMessages(conversationId) {
+  if (typeof window === 'undefined' || !conversationId) {
+    return [];
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(`${MESSAGE_CACHE_KEY}:${conversationId}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedMessages(conversationId, messages) {
+  if (typeof window === 'undefined' || !conversationId) {
+    return;
+  }
+
+  try {
+    if (!messages?.length) {
+      window.sessionStorage.removeItem(`${MESSAGE_CACHE_KEY}:${conversationId}`);
+      return;
+    }
+
+    window.sessionStorage.setItem(`${MESSAGE_CACHE_KEY}:${conversationId}`, JSON.stringify(messages.slice(-50)));
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
 function mergeById(currentMessages, incomingMessage) {
   if (currentMessages.some((message) => message.id === incomingMessage.id)) {
     return currentMessages;
@@ -21,18 +54,32 @@ function mergeUpdateById(currentMessages, updatedMessage) {
 
 export default function useMessages(conversationId) {
   const { user } = useAuth();
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(() => readCachedMessages(conversationId));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const updateMessages = useCallback((updater) => {
+    setMessages((current) => {
+      const nextMessages = typeof updater === 'function' ? updater(current) : updater;
+      writeCachedMessages(conversationId, nextMessages);
+      return nextMessages;
+    });
+  }, [conversationId]);
+
   const loadMessages = useCallback(async () => {
     if (!conversationId) {
-      setMessages([]);
+      updateMessages([]);
       setLoading(false);
       return;
     }
 
-    setLoading(true);
+    const cachedMessages = readCachedMessages(conversationId);
+    if (cachedMessages.length) {
+      updateMessages(cachedMessages);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     setError('');
 
     try {
@@ -47,13 +94,13 @@ export default function useMessages(conversationId) {
         throw queryError;
       }
 
-      setMessages((data ?? []).reverse());
+      updateMessages((data ?? []).reverse());
     } catch {
       setError('Unable to load messages right now.');
     } finally {
       setLoading(false);
     }
-  }, [conversationId]);
+  }, [conversationId, updateMessages]);
 
   useEffect(() => {
     void loadMessages();
@@ -75,7 +122,7 @@ export default function useMessages(conversationId) {
           filter: `conversation_id=eq.${conversationId}`,
         },
         (payload) => {
-          setMessages((current) => mergeById(current, payload.new));
+          updateMessages((current) => mergeById(current, payload.new));
         },
       )
       .on(
@@ -87,7 +134,7 @@ export default function useMessages(conversationId) {
           filter: `conversation_id=eq.${conversationId}`,
         },
         (payload) => {
-          setMessages((current) => mergeUpdateById(current, payload.new));
+          updateMessages((current) => mergeUpdateById(current, payload.new));
         },
       )
       .subscribe();
@@ -124,7 +171,7 @@ export default function useMessages(conversationId) {
         optimistic: true,
       };
 
-      setMessages((current) => [...current, optimisticMessage]);
+      updateMessages((current) => [...current, optimisticMessage]);
 
       if (file) {
         messageType = file.type.startsWith('image/') ? 'image' : 'file';
@@ -140,7 +187,7 @@ export default function useMessages(conversationId) {
           if (localPreviewUrl) {
             URL.revokeObjectURL(localPreviewUrl);
           }
-          setMessages((current) => current.filter((message) => message.id !== optimisticMessage.id));
+          updateMessages((current) => current.filter((message) => message.id !== optimisticMessage.id));
           return { error: uploadError.message || 'Unable to upload file.' };
         }
 
@@ -177,7 +224,7 @@ export default function useMessages(conversationId) {
           URL.revokeObjectURL(localPreviewUrl);
         }
 
-        setMessages((current) =>
+        updateMessages((current) =>
           current
             .filter((message) => message.id !== optimisticMessage.id)
             .concat(data)
@@ -200,11 +247,11 @@ export default function useMessages(conversationId) {
         if (localPreviewUrl) {
           URL.revokeObjectURL(localPreviewUrl);
         }
-        setMessages((current) => current.filter((message) => message.id !== optimisticMessage.id));
+        updateMessages((current) => current.filter((message) => message.id !== optimisticMessage.id));
         return { error: sendError.message || 'Unable to send message.' };
       }
     },
-    [conversationId, user?.id],
+    [conversationId, updateMessages, user?.id],
   );
 
   return useMemo(
